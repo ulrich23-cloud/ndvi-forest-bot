@@ -11,7 +11,7 @@ encoded_key = os.environ.get("GEE_SERVICE_ACCOUNT_B64")
 if not encoded_key:
     raise Exception("❌ Secret GEE_SERVICE_ACCOUNT_B64 non trouvé !")
 
-# Décode et crée le fichier de clé temporaire
+# Décodage de la clé
 key_json = base64.b64decode(encoded_key).decode("utf-8")
 with open("gee-service-account.json", "w") as f:
     f.write(key_json)
@@ -24,7 +24,7 @@ credentials = ee.ServiceAccountCredentials(
 ee.Initialize(credentials)
 print("✅ Earth Engine initialisé avec succès.")
 
-# 🌍 Polygone de la réserve So’o Lala
+# 🌍 Zone de So’o Lala
 geometry = ee.Geometry.Polygon([
     [
         [12.3, 3.5],
@@ -35,7 +35,7 @@ geometry = ee.Geometry.Polygon([
     ]
 ])
 
-# 📅 Recherche image dans les 7 derniers jours
+# 📅 Recherche image NDVI dans les 7 derniers jours
 def get_latest_valid_image():
     for i in range(0, 7):
         date = datetime.utcnow() - timedelta(days=i)
@@ -48,22 +48,30 @@ def get_latest_valid_image():
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)) \
             .map(lambda img: img.normalizedDifference(['B8', 'B4']).rename('NDVI'))
 
-        if collection.size().getInfo() > 0:
-            return collection.sort('system:time_start', False).first(), date.date()
+        image = collection.sort('system:time_start', False).first()
+
+        try:
+            info = image.getInfo()
+            print(f"✅ Image trouvée pour {date_str}")
+            return image, date.date()
+        except Exception as e:
+            print(f"⚠️ Aucun résultat pour {date_str}, erreur : {str(e)}")
+            continue
 
     return None, None
 
+# 🔁 Récupération image
 image, valid_date = get_latest_valid_image()
 
 if image is None:
-    print("⚠️ Aucune image valide disponible dans les 7 derniers jours.")
+    print("❌ Aucune image NDVI valide disponible dans les 7 derniers jours.")
     exit()
 
 # 🎯 Détection NDVI < 0.2
 ndvi_mask = image.lt(0.2)
 ndvi_data = image.updateMask(ndvi_mask)
 
-# 🧠 Extraction de points NDVI suspects
+# 🧠 Extraction des pixels suspects
 points = ndvi_data.sample(
     region=geometry,
     scale=10,
@@ -71,14 +79,14 @@ points = ndvi_data.sample(
     geometries=True
 )
 
-# 📡 Envoi vers ton API PHP
+# 📡 Envoi des alertes vers l'API PHP
 api_url = "https://ndvi.infinityfreeapp.com/ndvi_alerts.php"
-features = points.getInfo()['features']
+features = points.getInfo().get('features', [])
 
 if not features:
     print("✅ Aucune alerte NDVI < 0.2 détectée aujourd’hui.")
 else:
-    print(f"🚨 {len(features)} alertes NDVI détectées.")
+    print(f"🚨 {len(features)} alertes détectées.")
 
 for f in features:
     props = f['properties']
@@ -107,6 +115,6 @@ for f in features:
         if response.status_code == 200:
             print(f"✅ Alert sent: NDVI={ndvi:.3f}, Lat={coords[1]:.4f}, Lon={coords[0]:.4f}")
         else:
-            print(f"❌ POST error {response.status_code}: {response.text}")
+            print(f"❌ Erreur API : {response.status_code} - {response.text}")
     except Exception as e:
-        print(f"❌ Exception sending alert: {e}")
+        print(f"❌ Exception lors de l’envoi : {e}")
