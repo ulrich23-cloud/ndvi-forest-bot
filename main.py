@@ -42,7 +42,7 @@ def get_latest_valid_image():
         date_str = date.strftime("%Y-%m-%d")
         print(f"🔍 Test image for {date_str}")
 
-        collection = ee.ImageCollection('COPERNICUS/S2_SR') \
+        collection = ee.ImageCollection('COPERNICUS/S2_HARMONIZED') \
             .filterDate(date_str, date_str) \
             .filterBounds(geometry) \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)) \
