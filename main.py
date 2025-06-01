@@ -3,29 +3,28 @@ import ee
 import json
 import base64
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# 🛰️ Auth Earth Engine via secret GitHub
+# 🔐 Authentification Earth Engine via GitHub Secret
 encoded_key = os.environ.get("GEE_SERVICE_ACCOUNT_B64")
 
 if not encoded_key:
     raise Exception("❌ Secret GEE_SERVICE_ACCOUNT_B64 non trouvé !")
 
-# 🔐 Recréer le fichier clé à partir du secret
+# Décode et crée le fichier de clé temporaire
 key_json = base64.b64decode(encoded_key).decode("utf-8")
 with open("gee-service-account.json", "w") as f:
     f.write(key_json)
 
-# 🌍 Initialisation Earth Engine
+# 🛰️ Initialisation Earth Engine
 credentials = ee.ServiceAccountCredentials(
     'ndvi-bot-service-520@booming-primer-461310-r7.iam.gserviceaccount.com',
     'gee-service-account.json'
 )
 ee.Initialize(credentials)
-
 print("✅ Earth Engine initialisé avec succès.")
 
-# 📍 Définir le polygone de So’o Lala
+# 🌍 Polygone de la réserve So’o Lala
 geometry = ee.Geometry.Polygon([
     [
         [12.3, 3.5],
@@ -36,32 +35,35 @@ geometry = ee.Geometry.Polygon([
     ]
 ])
 
-# 📆 Date d’aujourd’hui
-today = datetime.utcnow().date()
-start_date = str(today)
-end_date = str(today)
+# 📅 Recherche image dans les 7 derniers jours
+def get_latest_valid_image():
+    for i in range(0, 7):
+        date = datetime.utcnow() - timedelta(days=i)
+        date_str = date.strftime("%Y-%m-%d")
+        print(f"🔍 Test image for {date_str}")
 
-# 📡 Charger Sentinel-2 + NDVI
-collection = ee.ImageCollection('COPERNICUS/S2_SR') \
-    .filterDate(start_date, end_date) \
-    .filterBounds(geometry) \
-    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)) \
-    .map(lambda img: img.normalizedDifference(['B8', 'B4']).rename('NDVI'))
+        collection = ee.ImageCollection('COPERNICUS/S2_SR') \
+            .filterDate(date_str, date_str) \
+            .filterBounds(geometry) \
+            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)) \
+            .map(lambda img: img.normalizedDifference(['B8', 'B4']).rename('NDVI'))
 
-# 📉 Extraire la dernière image dispo
-image = collection.sort('system:time_start', False).first()
+        if collection.size().getInfo() > 0:
+            return collection.sort('system:time_start', False).first(), date.date()
+
+    return None, None
+
+image, valid_date = get_latest_valid_image()
 
 if image is None:
-    print("⚠️ Aucune image disponible aujourd’hui.")
+    print("⚠️ Aucune image valide disponible dans les 7 derniers jours.")
     exit()
 
-# 🎯 Masquer les pixels NDVI < 0.2
+# 🎯 Détection NDVI < 0.2
 ndvi_mask = image.lt(0.2)
-
-# 🎯 Extraire les coordonnées des pixels concernés
 ndvi_data = image.updateMask(ndvi_mask)
 
-# 🧠 Générer une grille de points
+# 🧠 Extraction de points NDVI suspects
 points = ndvi_data.sample(
     region=geometry,
     scale=10,
@@ -69,11 +71,15 @@ points = ndvi_data.sample(
     geometries=True
 )
 
-# 📨 API target
+# 📡 Envoi vers ton API PHP
 api_url = "https://ndvi.infinityfreeapp.com/ndvi_alerts.php"
-
-# 📤 Pour chaque point : envoyer JSON vers l’API
 features = points.getInfo()['features']
+
+if not features:
+    print("✅ Aucune alerte NDVI < 0.2 détectée aujourd’hui.")
+else:
+    print(f"🚨 {len(features)} alertes NDVI détectées.")
+
 for f in features:
     props = f['properties']
     ndvi = float(props['NDVI'])
@@ -83,12 +89,12 @@ for f in features:
     payload = {
         "NDVI": ndvi,
         "count": 1,
-        "date": str(today),
+        "date": str(valid_date),
         "label": 1,
         "latitude": coords[1],
         "longitude": coords[0],
-        "month": today.month,
-        "year": today.year,
+        "month": valid_date.month,
+        "year": valid_date.year,
         "geo": {
             "type": "Point",
             "coordinates": coords,
@@ -101,6 +107,6 @@ for f in features:
         if response.status_code == 200:
             print(f"✅ Alert sent: NDVI={ndvi:.3f}, Lat={coords[1]:.4f}, Lon={coords[0]:.4f}")
         else:
-            print(f"❌ Error sending data: {response.status_code} - {response.text}")
+            print(f"❌ POST error {response.status_code}: {response.text}")
     except Exception as e:
         print(f"❌ Exception sending alert: {e}")
